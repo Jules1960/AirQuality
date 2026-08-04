@@ -68,6 +68,27 @@
   }
   .updated{font-size:11px; color:var(--text-dim); margin-top:8px;}
 
+  .aq-panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:16px; margin-bottom:20px; display:none;
+  }
+  .aq-panel.show{display:block;}
+  .aq-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
+  .aq-head .room-label{
+    font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-dim);
+  }
+  .aq-badge{
+    font-family:var(--mono); font-size:12px; font-weight:700; letter-spacing:.06em;
+    padding:5px 12px; border-radius:999px; color:#0C0F12;
+  }
+  .aq-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px;}
+  .aq-metric{
+    background:var(--panel-2); border-radius:10px; padding:10px 12px; text-align:center;
+  }
+  .aq-metric .lbl{font-size:10.5px; color:var(--text-dim); letter-spacing:.06em; margin-bottom:4px;}
+  .aq-metric .val{font-family:var(--mono); font-size:20px; font-weight:600;}
+  .aq-metric .unit{font-size:11px; color:var(--text-dim); font-weight:400;}
+
   .controls{
     display:flex; flex-wrap:wrap; gap:8px; align-items:center;
     justify-content:space-between; margin-bottom:14px;
@@ -114,6 +135,10 @@
   <!-- gauge cards injected by JS -->
 </div>
 
+<div class="aq-panel" id="aqPanel">
+  <!-- air quality content injected by JS, only shown for rooms with PM data -->
+</div>
+
 <div class="controls">
   <div class="chip-row" id="roomChips">
     <div class="chip" data-room="both" data-active="true">Both rooms</div>
@@ -145,6 +170,7 @@
 // ---------- Config ----------
 const SUPABASE_URL = "https://wkmlxizsofuyjgehloyh.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbWx4aXpzb2Z1eWpnZWhsb3loIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NzE5NDcsImV4cCI6MjEwMTE0Nzk0N30.QuuPMPafGrhNVubJmb1yfoYAmSg4kBldgWg0EJMLASw";
+
 
 const ROOMS = [
   { key: "living_room", label: "Living Room", accent: "#E2A24C" },
@@ -216,16 +242,46 @@ function timeAgo(iso){
   return Math.floor(s/86400) + "d ago";
 }
 
+// EPA-style PM2.5/PM10 breakpoints — mirrors the on-device thresholds exactly,
+// so the health badge here always matches what the 7" screen shows.
+function pm25Status(v){ if (v<=12) return 0; if (v<=35) return 1; if (v<=55) return 2; return 3; }
+function pm10Status(v){ if (v<=54) return 0; if (v<=154) return 1; if (v<=254) return 2; return 3; }
+const AQ_LABELS = ["GOOD","MODERATE","UNHEALTHY","DANGEROUS"];
+const AQ_COLORS = ["#00CC44","#FFAA00","#FF4400","#CC0000"];
+
+function renderAirQuality(){
+  const panel = document.getElementById('aqPanel');
+  // Only living_room currently reports PM data; render for whichever room has it.
+  const room = ROOMS.find(r => latest[r.key] && latest[r.key].pm2_5 != null);
+  if (!room){ panel.classList.remove('show'); return; }
+
+  const d = latest[room.key];
+  const level = Math.max(pm25Status(d.pm2_5), pm10Status(d.pm10));
+
+  panel.classList.add('show');
+  panel.innerHTML = `
+    <div class="aq-head">
+      <div class="room-label">${room.label} · Air Quality</div>
+      <div class="aq-badge" style="background:${AQ_COLORS[level]}">${AQ_LABELS[level]}</div>
+    </div>
+    <div class="aq-grid">
+      <div class="aq-metric"><div class="lbl">PM1.0</div><div class="val">${d.pm1_0}<span class="unit"> µg/m³</span></div></div>
+      <div class="aq-metric"><div class="lbl">PM2.5</div><div class="val">${d.pm2_5}<span class="unit"> µg/m³</span></div></div>
+      <div class="aq-metric"><div class="lbl">PM10</div><div class="val">${d.pm10}<span class="unit"> µg/m³</span></div></div>
+    </div>`;
+}
+
 async function loadLatest(){
   for (const r of ROOMS){
     const { data, error } = await sb.from('readings')
-      .select('temp_c,humidity,created_at')
+      .select('temp_c,humidity,pm1_0,pm2_5,pm10,created_at')
       .eq('room', r.key)
       .order('created_at', { ascending:false })
       .limit(1);
     if (!error && data && data.length) latest[r.key] = data[0];
   }
   renderGauges();
+  renderAirQuality();
 }
 
 // ---------- Chart ----------
