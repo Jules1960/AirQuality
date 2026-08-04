@@ -144,6 +144,13 @@
   <!-- air quality content injected by JS, only shown for rooms with PM data -->
 </div>
 
+<div class="controls" style="margin-bottom:8px;">
+  <div class="chip-row" id="viewChips">
+    <div class="chip" data-view="climate" data-active="true">Climate</div>
+    <div class="chip" data-view="air_quality">Air Quality</div>
+  </div>
+</div>
+
 <div class="controls">
   <div class="chip-row" id="roomChips">
     <div class="chip" data-room="both" data-active="true">Both rooms</div>
@@ -171,6 +178,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
 <script>
 // ---------- Config ----------
 const SUPABASE_URL = "https://wkmlxizsofuyjgehloyh.supabase.co";
@@ -300,8 +308,11 @@ async function loadLatest(){
 
 // ---------- Chart ----------
 let chart = null;
+let activeView = "climate";   // "climate" | "air_quality"
 let activeRoom = "both";
 let activeRange = "24h";
+
+const PM_ROOM_KEY = "living_room"; // only room currently reporting PM data
 
 const RANGE_CONFIG = {
   "24h": { since: () => new Date(Date.now() - 24*3600*1000), bucket: null,    label: "raw" },
@@ -316,23 +327,25 @@ async function fetchSeries(roomKey, rangeKey){
 
   if (!cfg.bucket){
     const { data, error } = await sb.from('readings')
-      .select('temp_c,humidity,created_at')
+      .select('temp_c,humidity,pm1_0,pm2_5,pm10,created_at')
       .eq('room', roomKey)
       .gte('created_at', since)
       .order('created_at', { ascending:true })
       .limit(1000);
     if (error) { console.error(error); return []; }
-    return data.map(d => ({ t: d.created_at, temp: d.temp_c, hum: d.humidity }));
+    return data.map(d => ({ t: d.created_at, temp: d.temp_c, hum: d.humidity,
+                             pm1: d.pm1_0, pm25: d.pm2_5, pm10: d.pm10 }));
   }
 
   const { data, error } = await sb.rpc('readings_bucketed', {
     p_room: roomKey, p_bucket: cfg.bucket, p_since: since
   });
   if (error) { console.error(error); return []; }
-  return data.map(d => ({ t: d.bucket, temp: d.avg_temp, hum: d.avg_humidity }));
+  return data.map(d => ({ t: d.bucket, temp: d.avg_temp, hum: d.avg_humidity,
+                           pm1: d.avg_pm1_0, pm25: d.avg_pm2_5, pm10: d.avg_pm10 }));
 }
 
-function buildDatasets(seriesByRoom){
+function buildClimateDatasets(seriesByRoom){
   const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
   const datasets = [];
   for (const r of rooms){
@@ -353,48 +366,112 @@ function buildDatasets(seriesByRoom){
   return datasets;
 }
 
+const PM_SERIES = [
+  { key:'pm1',  label:'PM1.0',  color:'#8891A0' },
+  { key:'pm25', label:'PM2.5',  color:'#E2A24C' },
+  { key:'pm10', label:'PM10',   color:'#C77DFF' },
+];
+
+function buildAirQualityDatasets(series){
+  return PM_SERIES.map(s => ({
+    label: s.label,
+    data: series.map(p => ({ x: p.t, y: p[s.key] })),
+    borderColor: s.color, backgroundColor: s.color,
+    borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'yPM',
+  }));
+}
+
+// PM2.5 EPA-style band shading, mirrors the same thresholds as the health badge
+const PM_BANDS = [
+  { min:0,  max:12,  color:'rgba(0,204,68,0.06)' },
+  { min:12, max:35,  color:'rgba(255,170,0,0.06)' },
+  { min:35, max:55,  color:'rgba(255,68,0,0.06)' },
+  { min:55, max:250, color:'rgba(204,0,0,0.06)' },
+];
+
 function renderLegend(){
+  const el = document.getElementById('legend');
+  if (activeView === "air_quality"){
+    el.innerHTML = PM_SERIES.map(s => `
+      <span><span class="sw" style="background:${s.color}"></span>${s.label}</span>
+    `).join('');
+    return;
+  }
   const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
-  document.getElementById('legend').innerHTML = rooms.map(r => `
+  el.innerHTML = rooms.map(r => `
     <span><span class="sw" style="background:${r.accent}"></span>${r.label} temp</span>
     <span><span class="sw" style="background:${r.accent}; opacity:.55; border-top:1.5px dashed ${r.accent}; height:0;"></span>${r.label} humidity</span>
   `).join('');
 }
 
 async function refreshChart(){
-  const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
-  const seriesByRoom = {};
-  await Promise.all(rooms.map(async r => { seriesByRoom[r.key] = await fetchSeries(r.key, activeRange); }));
+  let datasets, anyData;
 
-  const anyData = Object.values(seriesByRoom).some(s => s.length > 0);
+  if (activeView === "air_quality"){
+    const series = await fetchSeries(PM_ROOM_KEY, activeRange);
+    anyData = series.some(p => p.pm25 != null);
+    datasets = buildAirQualityDatasets(series);
+  } else {
+    const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
+    const seriesByRoom = {};
+    await Promise.all(rooms.map(async r => { seriesByRoom[r.key] = await fetchSeries(r.key, activeRange); }));
+    anyData = Object.values(seriesByRoom).some(s => s.length > 0);
+    datasets = buildClimateDatasets(seriesByRoom);
+  }
+
   document.getElementById('emptyState').style.display = anyData ? 'none' : 'flex';
-
-  const datasets = buildDatasets(seriesByRoom);
   renderLegend();
 
   const timeUnit = { "24h":"hour", "7d":"day", "30d":"day", "1y":"month" }[activeRange];
 
   if (chart) chart.destroy();
   const ctx = document.getElementById('chart').getContext('2d');
+
+  const scales = activeView === "air_quality"
+    ? {
+        x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
+        yPM: { position:'left', beginAtZero:true, ticks:{ color:'#E9E6DF' }, grid:{ color:'#20272F' }, title:{ display:true, text:'µg/m³', color:'#7C8792' } },
+      }
+    : {
+        x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
+        yTemp: { position:'left', ticks:{ color:'#E2A24C' }, grid:{ color:'#20272F' }, title:{ display:true, text:'°C', color:'#7C8792' } },
+        yHum:  { position:'right', ticks:{ color:'#4FA8A0' }, grid:{ display:false }, title:{ display:true, text:'% RH', color:'#7C8792' } },
+      };
+
+  const annotations = activeView === "air_quality"
+    ? Object.fromEntries(PM_BANDS.map((b,i) => [`band${i}`, {
+        type:'box', yScaleID:'yPM', yMin:b.min, yMax:b.max,
+        backgroundColor:b.color, borderWidth:0,
+      }]))
+    : {};
+
   chart = new Chart(ctx, {
     type: 'line',
     data: { datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display:false }, tooltip: {
-        backgroundColor: '#1A2027', borderColor:'#2A323C', borderWidth:1,
-        titleColor:'#E9E6DF', bodyColor:'#E9E6DF', padding:10,
-      }},
-      scales: {
-        x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
-        yTemp: { position:'left', ticks:{ color:'#E2A24C' }, grid:{ color:'#20272F' }, title:{ display:true, text:'°C', color:'#7C8792' } },
-        yHum:  { position:'right', ticks:{ color:'#4FA8A0' }, grid:{ display:false }, title:{ display:true, text:'% RH', color:'#7C8792' } },
-      }
+      plugins: {
+        legend: { display:false },
+        tooltip: {
+          backgroundColor: '#1A2027', borderColor:'#2A323C', borderWidth:1,
+          titleColor:'#E9E6DF', bodyColor:'#E9E6DF', padding:10,
+        },
+        annotation: { annotations },
+      },
+      scales,
     }
   });
 }
 
+document.getElementById('viewChips').addEventListener('click', e => {
+  const chip = e.target.closest('.chip'); if (!chip) return;
+  document.querySelectorAll('#viewChips .chip').forEach(c => c.dataset.active = "false");
+  chip.dataset.active = "true";
+  activeView = chip.dataset.view;
+  document.getElementById('roomChips').style.display = activeView === "air_quality" ? "none" : "flex";
+  refreshChart();
+});
 document.getElementById('roomChips').addEventListener('click', e => {
   const chip = e.target.closest('.chip'); if (!chip) return;
   document.querySelectorAll('#roomChips .chip').forEach(c => c.dataset.active = "false");
