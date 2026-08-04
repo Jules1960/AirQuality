@@ -65,6 +65,11 @@
   }
   .readout-hum{
     font-family:var(--mono); font-size:16px; color:var(--hum);
+    display:flex; align-items:center; gap:8px;
+  }
+  .mould-badge{
+    font-family:var(--sans); font-size:9.5px; font-weight:700; letter-spacing:.05em;
+    padding:2px 7px; border-radius:999px; color:#0C0F12;
   }
   .updated{font-size:11px; color:var(--text-dim); margin-top:8px;}
 
@@ -168,9 +173,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 // ---------- Config ----------
-const SUPABASE_URL = "https://wkmlxizsofuyjgehloyh.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbWx4aXpzb2Z1eWpnZWhsb3loIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NzE5NDcsImV4cCI6MjEwMTE0Nzk0N30.QuuPMPafGrhNVubJmb1yfoYAmSg4kBldgWg0EJMLASw";
-
+const SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 
 const ROOMS = [
   { key: "living_room", label: "Living Room", accent: "#E2A24C" },
@@ -211,12 +215,20 @@ function tempToPct(t){
 
 const latest = {}; // room -> {temp_c, humidity, created_at}
 
+// UK mould/health humidity thresholds — mirrors the device's getHumidityColor exactly.
+function mouldRisk(h){
+  if (h < 60) return { label:"OK", color:"#00CC44" };
+  if (h < 75) return { label:"WATCH", color:"#FFAA00" };
+  return { label:"MOULD RISK", color:"#CC0000" };
+}
+
 function renderGauges(){
   const el = document.getElementById('gauges');
   el.innerHTML = ROOMS.map(r => {
     const d = latest[r.key];
     const temp = d ? d.temp_c.toFixed(1) : "--";
     const hum = d ? d.humidity.toFixed(0) : "--";
+    const risk = d ? mouldRisk(d.humidity) : null;
     const isLive = d && (Date.now() - new Date(d.created_at).getTime()) < 30*60*1000;
     const ago = d ? timeAgo(d.created_at) : "no data yet";
     return `
@@ -226,7 +238,9 @@ function renderGauges(){
           ${gaugeSVG(d ? tempToPct(d.temp_c) : 0, r.accent)}
           <div class="readouts">
             <div class="readout-temp">${temp}<span style="font-size:16px;">°C</span></div>
-            <div class="readout-hum">${hum}% RH</div>
+            <div class="readout-hum">${hum}% RH
+              ${risk ? `<span class="mould-badge" style="background:${risk.color}">${risk.label}</span>` : ''}
+            </div>
           </div>
         </div>
         <div class="updated">Updated ${ago}</div>
