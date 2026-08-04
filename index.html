@@ -184,6 +184,7 @@
 const SUPABASE_URL = "https://wkmlxizsofuyjgehloyh.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbWx4aXpzb2Z1eWpnZWhsb3loIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NzE5NDcsImV4cCI6MjEwMTE0Nzk0N30.QuuPMPafGrhNVubJmb1yfoYAmSg4kBldgWg0EJMLASw";
 
+
 const ROOMS = [
   { key: "living_room", label: "Living Room", accent: "#E2A24C" },
   { key: "bedroom",      label: "Bedroom",      accent: "#4FA8A0" },
@@ -405,12 +406,14 @@ function renderLegend(){
 }
 
 async function refreshChart(){
-  let datasets, anyData;
+  let datasets, anyData, pmAxisMax = 60; // sensible default ceiling when there's no data yet
 
   if (activeView === "air_quality"){
     const series = await fetchSeries(PM_ROOM_KEY, activeRange);
     anyData = series.some(p => p.pm25 != null);
     datasets = buildAirQualityDatasets(series);
+    const allVals = series.flatMap(p => [p.pm1, p.pm25, p.pm10]).filter(v => v != null);
+    if (allVals.length) pmAxisMax = Math.max(60, Math.max(...allVals) * 1.3);
   } else {
     const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
     const seriesByRoom = {};
@@ -430,7 +433,7 @@ async function refreshChart(){
   const scales = activeView === "air_quality"
     ? {
         x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
-        yPM: { position:'left', beginAtZero:true, ticks:{ color:'#E9E6DF' }, grid:{ color:'#20272F' }, title:{ display:true, text:'µg/m³', color:'#7C8792' } },
+        yPM: { position:'left', beginAtZero:true, max:pmAxisMax, ticks:{ color:'#E9E6DF' }, grid:{ color:'#20272F' }, title:{ display:true, text:'µg/m³', color:'#7C8792' } },
       }
     : {
         x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
@@ -440,7 +443,7 @@ async function refreshChart(){
 
   const annotations = activeView === "air_quality"
     ? Object.fromEntries(PM_BANDS.map((b,i) => [`band${i}`, {
-        type:'box', yScaleID:'yPM', yMin:b.min, yMax:b.max,
+        type:'box', yScaleID:'yPM', yMin:b.min, yMax:Math.min(b.max, pmAxisMax),
         backgroundColor:b.color, borderWidth:0,
       }]))
     : {};
