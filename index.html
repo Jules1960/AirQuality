@@ -140,6 +140,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 // ---------- Config ----------
 const SUPABASE_URL = "https://wkmlxizsofuyjgehloyh.supabase.co";
@@ -347,7 +348,7 @@ async function boot(){
     document.getElementById('footerStatus').textContent = 'live · updates every 60s';
   }catch(err){
     console.error(err);
-    document.getElementById('footerStatus').textContent = 'connection error — check console';
+    document.getElementById('footerStatus').textContent = 'error: ' + err.message;
   }
 }
 boot();
