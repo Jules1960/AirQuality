@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12161B">
+<title>Room Monitor</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root{
+    --bg:#12161B;
+    --panel:#1A2027;
+    --panel-2:#20272F;
+    --line:#2A323C;
+    --text:#E9E6DF;
+    --text-dim:#7C8792;
+    --temp:#E2A24C;
+    --hum:#4FA8A0;
+    --alert:#D9634A;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; background:var(--bg); color:var(--text); font-family:var(--sans);}
+  body{
+    min-height:100vh;
+    padding: max(20px, env(safe-area-inset-top)) 18px 32px;
+  }
+  header{
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-bottom:18px;
+  }
+  header h1{
+    font-size:15px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--text-dim); font-weight:600; margin:0;
+  }
+  header .clock{
+    font-family:var(--mono); font-size:13px; color:var(--text-dim);
+  }
+  .gauges{
+    display:grid; grid-template-columns:1fr 1fr; gap:12px;
+    margin-bottom:20px;
+  }
+  @media (max-width:520px){ .gauges{grid-template-columns:1fr;} }
+  .gauge-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:16px; position:relative; overflow:hidden;
+  }
+  .gauge-card .room-label{
+    font-size:12px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--text-dim); margin-bottom:8px; display:flex; align-items:center; gap:8px;
+  }
+  .gauge-card .dot{
+    width:7px; height:7px; border-radius:50%; background:var(--text-dim);
+  }
+  .gauge-card .dot.live{background:var(--hum); box-shadow:0 0 0 3px rgba(79,168,160,.15);}
+  .gauge-row{display:flex; align-items:center; gap:14px;}
+  .gauge-row svg{flex:0 0 auto;}
+  .readouts{display:flex; flex-direction:column; gap:6px;}
+  .readout-temp{
+    font-family:var(--mono); font-size:34px; font-weight:600; color:var(--temp);
+    line-height:1;
+  }
+  .readout-hum{
+    font-family:var(--mono); font-size:16px; color:var(--hum);
+  }
+  .updated{font-size:11px; color:var(--text-dim); margin-top:8px;}
+
+  .controls{
+    display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+    justify-content:space-between; margin-bottom:14px;
+  }
+  .chip-row{display:flex; gap:6px; flex-wrap:wrap;}
+  .chip{
+    font-family:var(--sans); font-size:12.5px; color:var(--text-dim);
+    background:var(--panel); border:1px solid var(--line); border-radius:999px;
+    padding:7px 13px; cursor:pointer; user-select:none; transition:all .15s ease;
+  }
+  .chip[data-active="true"]{
+    color:var(--bg); background:var(--text); border-color:var(--text);
+  }
+
+  .chart-panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:16px 12px 10px;
+  }
+  .chart-panel .legend{
+    display:flex; gap:16px; font-size:11.5px; color:var(--text-dim);
+    padding:0 6px 10px; flex-wrap:wrap;
+  }
+  .legend span{display:inline-flex; align-items:center; gap:6px;}
+  .legend .sw{width:14px; height:2px; border-radius:2px; display:inline-block;}
+  .chart-wrap{position:relative; height:280px;}
+  .empty-state{
+    display:flex; align-items:center; justify-content:center; height:100%;
+    color:var(--text-dim); font-size:13px; text-align:center; padding:0 20px;
+  }
+  footer{
+    text-align:center; color:var(--text-dim); font-size:11px; margin-top:18px;
+    font-family:var(--mono);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Room Monitor</h1>
+  <div class="clock" id="clock">--:--:--</div>
+</header>
+
+<div class="gauges" id="gauges">
+  <!-- gauge cards injected by JS -->
+</div>
+
+<div class="controls">
+  <div class="chip-row" id="roomChips">
+    <div class="chip" data-room="both" data-active="true">Both rooms</div>
+    <div class="chip" data-room="living_room">Living room</div>
+    <div class="chip" data-room="bedroom">Bedroom</div>
+  </div>
+  <div class="chip-row" id="rangeChips">
+    <div class="chip" data-range="24h" data-active="true">24H</div>
+    <div class="chip" data-range="7d">7D</div>
+    <div class="chip" data-range="30d">30D</div>
+    <div class="chip" data-range="1y">1Y</div>
+  </div>
+</div>
+
+<div class="chart-panel">
+  <div class="legend" id="legend"></div>
+  <div class="chart-wrap">
+    <canvas id="chart"></canvas>
+    <div class="empty-state" id="emptyState" style="display:none;">No data yet for this range.</div>
+  </div>
+</div>
+
+<footer id="footerStatus">connecting…</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+// ---------- Config ----------
+const SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+
+const ROOMS = [
+  { key: "living_room", label: "Living Room", accent: "#E2A24C" },
+  { key: "bedroom",      label: "Bedroom",      accent: "#4FA8A0" },
+];
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ---------- Clock ----------
+function tickClock(){
+  document.getElementById('clock').textContent =
+    new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+}
+tickClock(); setInterval(tickClock, 1000);
+
+// ---------- Gauge cards ----------
+function gaugeSVG(pct, color){
+  // 180deg arc gauge, pct 0..1
+  const r = 34, cx = 40, cy = 40;
+  const startAngle = 200, endAngle = 340; // degrees, semi-circle-ish sweep
+  const toRad = d => (d * Math.PI) / 180;
+  const point = (deg) => [cx + r*Math.cos(toRad(deg)), cy + r*Math.sin(toRad(deg))];
+  const a1 = startAngle, a2 = startAngle + (endAngle-startAngle)*Math.max(0,Math.min(1,pct));
+  const [x1,y1] = point(a1), [x2,y2] = point(a2);
+  const [bx1,by1] = point(startAngle), [bx2,by2] = point(endAngle);
+  const largeArc = (a2-a1) > 180 ? 1 : 0;
+  return `
+    <svg width="80" height="60" viewBox="0 0 80 60">
+      <path d="M ${bx1} ${by1} A ${r} ${r} 0 1 1 ${bx2} ${by2}" fill="none" stroke="#2A323C" stroke-width="6" stroke-linecap="round"/>
+      <path d="M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="round"/>
+    </svg>`;
+}
+
+function tempToPct(t){
+  // comfortable indoor range mapped 12–28C onto the gauge sweep
+  return (t - 12) / (28 - 12);
+}
+
+const latest = {}; // room -> {temp_c, humidity, created_at}
+
+function renderGauges(){
+  const el = document.getElementById('gauges');
+  el.innerHTML = ROOMS.map(r => {
+    const d = latest[r.key];
+    const temp = d ? d.temp_c.toFixed(1) : "--";
+    const hum = d ? d.humidity.toFixed(0) : "--";
+    const isLive = d && (Date.now() - new Date(d.created_at).getTime()) < 30*60*1000;
+    const ago = d ? timeAgo(d.created_at) : "no data yet";
+    return `
+      <div class="gauge-card">
+        <div class="room-label"><span class="dot ${isLive?'live':''}"></span>${r.label}</div>
+        <div class="gauge-row">
+          ${gaugeSVG(d ? tempToPct(d.temp_c) : 0, r.accent)}
+          <div class="readouts">
+            <div class="readout-temp">${temp}<span style="font-size:16px;">°C</span></div>
+            <div class="readout-hum">${hum}% RH</div>
+          </div>
+        </div>
+        <div class="updated">Updated ${ago}</div>
+      </div>`;
+  }).join('');
+}
+
+function timeAgo(iso){
+  const s = Math.floor((Date.now() - new Date(iso).getTime())/1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s/60) + "m ago";
+  if (s < 86400) return Math.floor(s/3600) + "h ago";
+  return Math.floor(s/86400) + "d ago";
+}
+
+async function loadLatest(){
+  for (const r of ROOMS){
+    const { data, error } = await sb.from('readings')
+      .select('temp_c,humidity,created_at')
+      .eq('room', r.key)
+      .order('created_at', { ascending:false })
+      .limit(1);
+    if (!error && data && data.length) latest[r.key] = data[0];
+  }
+  renderGauges();
+}
+
+// ---------- Chart ----------
+let chart = null;
+let activeRoom = "both";
+let activeRange = "24h";
+
+const RANGE_CONFIG = {
+  "24h": { since: () => new Date(Date.now() - 24*3600*1000), bucket: null,    label: "raw" },
+  "7d":  { since: () => new Date(Date.now() - 7*86400*1000), bucket: "hour",  label: "hourly" },
+  "30d": { since: () => new Date(Date.now() - 30*86400*1000), bucket: "day",  label: "daily" },
+  "1y":  { since: () => new Date(Date.now() - 365*86400*1000), bucket: "month", label: "monthly" },
+};
+
+async function fetchSeries(roomKey, rangeKey){
+  const cfg = RANGE_CONFIG[rangeKey];
+  const since = cfg.since().toISOString();
+
+  if (!cfg.bucket){
+    const { data, error } = await sb.from('readings')
+      .select('temp_c,humidity,created_at')
+      .eq('room', roomKey)
+      .gte('created_at', since)
+      .order('created_at', { ascending:true })
+      .limit(1000);
+    if (error) { console.error(error); return []; }
+    return data.map(d => ({ t: d.created_at, temp: d.temp_c, hum: d.humidity }));
+  }
+
+  const { data, error } = await sb.rpc('readings_bucketed', {
+    p_room: roomKey, p_bucket: cfg.bucket, p_since: since
+  });
+  if (error) { console.error(error); return []; }
+  return data.map(d => ({ t: d.bucket, temp: d.avg_temp, hum: d.avg_humidity }));
+}
+
+function buildDatasets(seriesByRoom){
+  const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
+  const datasets = [];
+  for (const r of rooms){
+    const series = seriesByRoom[r.key] || [];
+    datasets.push({
+      label: `${r.label} · Temp`,
+      data: series.map(p => ({ x: p.t, y: p.temp })),
+      borderColor: r.accent, backgroundColor: r.accent,
+      borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'yTemp',
+    });
+    datasets.push({
+      label: `${r.label} · Humidity`,
+      data: series.map(p => ({ x: p.t, y: p.hum })),
+      borderColor: r.accent, backgroundColor: r.accent,
+      borderWidth: 1.5, borderDash: [4,3], pointRadius: 0, tension: 0.3, yAxisID: 'yHum',
+    });
+  }
+  return datasets;
+}
+
+function renderLegend(){
+  const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
+  document.getElementById('legend').innerHTML = rooms.map(r => `
+    <span><span class="sw" style="background:${r.accent}"></span>${r.label} temp</span>
+    <span><span class="sw" style="background:${r.accent}; opacity:.55; border-top:1.5px dashed ${r.accent}; height:0;"></span>${r.label} humidity</span>
+  `).join('');
+}
+
+async function refreshChart(){
+  const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
+  const seriesByRoom = {};
+  await Promise.all(rooms.map(async r => { seriesByRoom[r.key] = await fetchSeries(r.key, activeRange); }));
+
+  const anyData = Object.values(seriesByRoom).some(s => s.length > 0);
+  document.getElementById('emptyState').style.display = anyData ? 'none' : 'flex';
+
+  const datasets = buildDatasets(seriesByRoom);
+  renderLegend();
+
+  const timeUnit = { "24h":"hour", "7d":"day", "30d":"day", "1y":"month" }[activeRange];
+
+  if (chart) chart.destroy();
+  const ctx = document.getElementById('chart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display:false }, tooltip: {
+        backgroundColor: '#1A2027', borderColor:'#2A323C', borderWidth:1,
+        titleColor:'#E9E6DF', bodyColor:'#E9E6DF', padding:10,
+      }},
+      scales: {
+        x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
+        yTemp: { position:'left', ticks:{ color:'#E2A24C' }, grid:{ color:'#20272F' }, title:{ display:true, text:'°C', color:'#7C8792' } },
+        yHum:  { position:'right', ticks:{ color:'#4FA8A0' }, grid:{ display:false }, title:{ display:true, text:'% RH', color:'#7C8792' } },
+      }
+    }
+  });
+}
+
+document.getElementById('roomChips').addEventListener('click', e => {
+  const chip = e.target.closest('.chip'); if (!chip) return;
+  document.querySelectorAll('#roomChips .chip').forEach(c => c.dataset.active = "false");
+  chip.dataset.active = "true";
+  activeRoom = chip.dataset.room;
+  refreshChart();
+});
+document.getElementById('rangeChips').addEventListener('click', e => {
+  const chip = e.target.closest('.chip'); if (!chip) return;
+  document.querySelectorAll('#rangeChips .chip').forEach(c => c.dataset.active = "false");
+  chip.dataset.active = "true";
+  activeRange = chip.dataset.range;
+  refreshChart();
+});
+
+// ---------- Boot ----------
+async function boot(){
+  try{
+    await loadLatest();
+    await refreshChart();
+    document.getElementById('footerStatus').textContent = 'live · updates every 60s';
+  }catch(err){
+    console.error(err);
+    document.getElementById('footerStatus').textContent = 'connection error — check console';
+  }
+}
+boot();
+setInterval(loadLatest, 60*1000);
+setInterval(refreshChart, 5*60*1000);
+
+if ('serviceWorker' in navigator){
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>
