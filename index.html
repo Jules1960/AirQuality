@@ -144,10 +144,15 @@
   <!-- air quality content injected by JS, only shown for rooms with PM data -->
 </div>
 
+<div class="aq-panel" id="tankPanel">
+  <!-- aquarium content injected by JS, only shown when Aquarium tab is active -->
+</div>
+
 <div class="controls" style="margin-bottom:8px;">
   <div class="chip-row" id="viewChips">
     <div class="chip" data-view="climate" data-active="true">Climate</div>
     <div class="chip" data-view="air_quality">Air Quality</div>
+    <div class="chip" data-view="aquarium">Aquarium</div>
   </div>
 </div>
 
@@ -161,7 +166,7 @@
     <div class="chip" data-range="24h" data-active="true">24H</div>
     <div class="chip" data-range="7d">7D</div>
     <div class="chip" data-range="30d">30D</div>
-    <div class="chip" data-range="1y">1Y</div>
+    <div class="chip" data-range="1y" id="rangeChip1y">1Y</div>
   </div>
 </div>
 
@@ -223,6 +228,7 @@ function tempToPct(t){
 }
 
 const latest = {}; // room -> {temp_c, humidity, created_at}
+let latestTank = null; // {temp_c, ph, spec_gravity, created_at}
 
 // UK mould/health humidity thresholds — mirrors the device's getHumidityColor exactly.
 function mouldRisk(h){
@@ -294,6 +300,47 @@ function renderAirQuality(){
     </div>`;
 }
 
+// Reef-safe target ranges: idealMin/Max = healthy zone, warnMin/Max = caution zone,
+// anything outside warn range counts as ALERT.
+const TANK_RANGES = {
+  temp: { idealMin:24,    idealMax:27,    warnMin:23,    warnMax:28    },
+  ph:   { idealMin:8.1,   idealMax:8.4,   warnMin:7.9,   warnMax:8.6   },
+  sg:   { idealMin:1.023, idealMax:1.025, warnMin:1.020, warnMax:1.027 },
+};
+const TANK_STATUS_LABELS = ["OK","WATCH","ALERT"];
+const TANK_STATUS_COLORS = ["#00CC44","#FFAA00","#CC0000"];
+
+function tankParamStatus(val, r){
+  if (val == null) return 1;
+  if (val >= r.idealMin && val <= r.idealMax) return 0;
+  if (val >= r.warnMin && val <= r.warnMax) return 1;
+  return 2;
+}
+
+function renderTankPanel(){
+  const panel = document.getElementById('tankPanel');
+  if (activeView !== "aquarium" || !latestTank){ panel.classList.remove('show'); return; }
+
+  const t = latestTank;
+  const tempSt = tankParamStatus(t.temp_c, TANK_RANGES.temp);
+  const phSt = tankParamStatus(t.ph, TANK_RANGES.ph);
+  const sgSt = tankParamStatus(t.spec_gravity, TANK_RANGES.sg);
+  const overall = Math.max(tempSt, phSt, sgSt);
+
+  panel.classList.add('show');
+  panel.innerHTML = `
+    <div class="aq-head">
+      <div class="room-label">Aquarium · Reef Tank</div>
+      <div class="aq-badge" style="background:${TANK_STATUS_COLORS[overall]}">${TANK_STATUS_LABELS[overall]}</div>
+    </div>
+    <div class="aq-grid">
+      <div class="aq-metric"><div class="lbl">TEMP</div><div class="val" style="color:${TANK_STATUS_COLORS[tempSt]}">${t.temp_c.toFixed(1)}<span class="unit"> °C</span></div></div>
+      <div class="aq-metric"><div class="lbl">PH</div><div class="val" style="color:${TANK_STATUS_COLORS[phSt]}">${t.ph.toFixed(2)}</div></div>
+      <div class="aq-metric"><div class="lbl">SG</div><div class="val" style="color:${TANK_STATUS_COLORS[sgSt]}">${t.spec_gravity.toFixed(3)}</div></div>
+    </div>
+    <div class="updated">Updated ${timeAgo(t.created_at)}</div>`;
+}
+
 async function loadLatest(){
   for (const r of ROOMS){
     const { data, error } = await sb.from('readings')
@@ -303,13 +350,21 @@ async function loadLatest(){
       .limit(1);
     if (!error && data && data.length) latest[r.key] = data[0];
   }
+
+  const { data: tankData, error: tankErr } = await sb.from('aquarium_readings')
+    .select('temp_c,ph,spec_gravity,created_at')
+    .order('created_at', { ascending:false })
+    .limit(1);
+  if (!tankErr && tankData && tankData.length) latestTank = tankData[0];
+
   renderGauges();
   renderAirQuality();
+  renderTankPanel();
 }
 
 // ---------- Chart ----------
 let chart = null;
-let activeView = "climate";   // "climate" | "air_quality"
+let activeView = "climate";   // "climate" | "air_quality" | "aquarium"
 let activeRoom = "both";
 let activeRange = "24h";
 
@@ -344,6 +399,27 @@ async function fetchSeries(roomKey, rangeKey){
   if (error) { console.error(error); return []; }
   return data.map(d => ({ t: d.bucket, temp: d.avg_temp, hum: d.avg_humidity,
                            pm1: d.avg_pm1_0, pm25: d.avg_pm2_5, pm10: d.avg_pm10 }));
+}
+
+async function fetchTankSeries(rangeKey){
+  const cfg = RANGE_CONFIG[rangeKey];
+  const since = cfg.since().toISOString();
+
+  if (!cfg.bucket){
+    const { data, error } = await sb.from('aquarium_readings')
+      .select('temp_c,ph,spec_gravity,created_at')
+      .gte('created_at', since)
+      .order('created_at', { ascending:true })
+      .limit(1000);
+    if (error) { console.error(error); return []; }
+    return data.map(d => ({ t: d.created_at, temp: d.temp_c, ph: d.ph, sg: d.spec_gravity }));
+  }
+
+  const { data, error } = await sb.rpc('aquarium_bucketed', {
+    p_bucket: cfg.bucket, p_since: since
+  });
+  if (error) { console.error(error); return []; }
+  return data.map(d => ({ t: d.bucket, temp: d.avg_temp, ph: d.avg_ph, sg: d.avg_sg }));
 }
 
 function buildClimateDatasets(seriesByRoom){
@@ -382,6 +458,21 @@ function buildAirQualityDatasets(series){
   }));
 }
 
+const TANK_SERIES = [
+  { key:'temp', label:'Temp', color:'#E2A24C', axis:'yAqTemp' },
+  { key:'ph',   label:'pH',   color:'#4FA8A0', axis:'yAqPH'   },
+  { key:'sg',   label:'SG',   color:'#C77DFF', axis:'yAqSG'   },
+];
+
+function buildAquariumDatasets(series){
+  return TANK_SERIES.map(s => ({
+    label: s.label,
+    data: series.map(p => ({ x: p.t, y: p[s.key] })),
+    borderColor: s.color, backgroundColor: s.color,
+    borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: s.axis,
+  }));
+}
+
 // PM2.5 EPA-style band shading, mirrors the same thresholds as the health badge
 const PM_BANDS = [
   { min:0,  max:12,  color:'rgba(0,204,68,0.06)' },
@@ -394,6 +485,12 @@ function renderLegend(){
   const el = document.getElementById('legend');
   if (activeView === "air_quality"){
     el.innerHTML = PM_SERIES.map(s => `
+      <span><span class="sw" style="background:${s.color}"></span>${s.label}</span>
+    `).join('');
+    return;
+  }
+  if (activeView === "aquarium"){
+    el.innerHTML = TANK_SERIES.map(s => `
       <span><span class="sw" style="background:${s.color}"></span>${s.label}</span>
     `).join('');
     return;
@@ -414,6 +511,10 @@ async function refreshChart(){
     datasets = buildAirQualityDatasets(series);
     const allVals = series.flatMap(p => [p.pm1, p.pm25, p.pm10]).filter(v => v != null);
     if (allVals.length) pmAxisMax = Math.max(60, Math.max(...allVals) * 1.3);
+  } else if (activeView === "aquarium"){
+    const series = await fetchTankSeries(activeRange);
+    anyData = series.some(p => p.temp != null || p.ph != null || p.sg != null);
+    datasets = buildAquariumDatasets(series);
   } else {
     const rooms = activeRoom === "both" ? ROOMS : ROOMS.filter(r => r.key === activeRoom);
     const seriesByRoom = {};
@@ -430,23 +531,40 @@ async function refreshChart(){
   if (chart) chart.destroy();
   const ctx = document.getElementById('chart').getContext('2d');
 
-  const scales = activeView === "air_quality"
-    ? {
-        x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
-        yPM: { position:'left', beginAtZero:true, max:pmAxisMax, ticks:{ color:'#E9E6DF' }, grid:{ color:'#20272F' }, title:{ display:true, text:'µg/m³', color:'#7C8792' } },
-      }
-    : {
-        x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
-        yTemp: { position:'left', ticks:{ color:'#E2A24C' }, grid:{ color:'#20272F' }, title:{ display:true, text:'°C', color:'#7C8792' } },
-        yHum:  { position:'right', ticks:{ color:'#4FA8A0' }, grid:{ display:false }, title:{ display:true, text:'% RH', color:'#7C8792' } },
-      };
+  let scales;
+  if (activeView === "air_quality"){
+    scales = {
+      x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
+      yPM: { position:'left', beginAtZero:true, max:pmAxisMax, ticks:{ color:'#E9E6DF' }, grid:{ color:'#20272F' }, title:{ display:true, text:'µg/m³', color:'#7C8792' } },
+    };
+  } else if (activeView === "aquarium"){
+    scales = {
+      x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
+      yAqTemp: { position:'left',  ticks:{ color:'#E2A24C' }, grid:{ color:'#20272F' }, title:{ display:true, text:'°C', color:'#7C8792' }, min:20, max:31 },
+      yAqPH:   { position:'right', ticks:{ color:'#4FA8A0' }, grid:{ display:false }, title:{ display:true, text:'pH', color:'#7C8792' }, min:7.5, max:9.0 },
+      yAqSG:   { position:'right', ticks:{ color:'#C77DFF' }, grid:{ display:false }, title:{ display:true, text:'SG', color:'#7C8792' }, min:1.015, max:1.030 },
+    };
+  } else {
+    scales = {
+      x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
+      yTemp: { position:'left', ticks:{ color:'#E2A24C' }, grid:{ color:'#20272F' }, title:{ display:true, text:'°C', color:'#7C8792' } },
+      yHum:  { position:'right', ticks:{ color:'#4FA8A0' }, grid:{ display:false }, title:{ display:true, text:'% RH', color:'#7C8792' } },
+    };
+  }
 
-  const annotations = activeView === "air_quality"
-    ? Object.fromEntries(PM_BANDS.map((b,i) => [`band${i}`, {
-        type:'box', yScaleID:'yPM', yMin:b.min, yMax:Math.min(b.max, pmAxisMax),
-        backgroundColor:b.color, borderWidth:0,
-      }]))
-    : {};
+  let annotations = {};
+  if (activeView === "air_quality"){
+    annotations = Object.fromEntries(PM_BANDS.map((b,i) => [`band${i}`, {
+      type:'box', yScaleID:'yPM', yMin:b.min, yMax:Math.min(b.max, pmAxisMax),
+      backgroundColor:b.color, borderWidth:0,
+    }]));
+  } else if (activeView === "aquarium"){
+    annotations = {
+      tempBand: { type:'box', yScaleID:'yAqTemp', yMin:TANK_RANGES.temp.idealMin, yMax:TANK_RANGES.temp.idealMax, backgroundColor:'rgba(226,162,76,0.08)', borderWidth:0 },
+      phBand:   { type:'box', yScaleID:'yAqPH',   yMin:TANK_RANGES.ph.idealMin,   yMax:TANK_RANGES.ph.idealMax,   backgroundColor:'rgba(79,168,160,0.08)', borderWidth:0 },
+      sgBand:   { type:'box', yScaleID:'yAqSG',   yMin:TANK_RANGES.sg.idealMin,   yMax:TANK_RANGES.sg.idealMax,   backgroundColor:'rgba(199,125,255,0.08)', borderWidth:0 },
+    };
+  }
 
   chart = new Chart(ctx, {
     type: 'line',
@@ -472,7 +590,21 @@ document.getElementById('viewChips').addEventListener('click', e => {
   document.querySelectorAll('#viewChips .chip').forEach(c => c.dataset.active = "false");
   chip.dataset.active = "true";
   activeView = chip.dataset.view;
-  document.getElementById('roomChips').style.display = activeView === "air_quality" ? "none" : "flex";
+  document.getElementById('roomChips').style.display = (activeView === "air_quality" || activeView === "aquarium") ? "none" : "flex";
+
+  const chip1y = document.getElementById('rangeChip1y');
+  if (activeView === "aquarium"){
+    chip1y.style.display = "none";
+    if (activeRange === "1y"){
+      activeRange = "30d";
+      document.querySelectorAll('#rangeChips .chip').forEach(c => c.dataset.active = "false");
+      document.querySelector('#rangeChips .chip[data-range="30d"]').dataset.active = "true";
+    }
+  } else {
+    chip1y.style.display = "";
+  }
+
+  renderTankPanel();
   refreshChart();
 });
 document.getElementById('roomChips').addEventListener('click', e => {
