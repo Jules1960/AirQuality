@@ -69,7 +69,7 @@
   }
   .mould-badge{
     font-family:var(--sans); font-size:9.5px; font-weight:700; letter-spacing:.05em;
-    padding:2px 7px; border-radius:999px; color:#0C0F12;
+    padding:2px 7px; border-radius:999px; color:#0C0F12; white-space:nowrap;
   }
   .updated{font-size:11px; color:var(--text-dim); margin-top:8px;}
 
@@ -230,11 +230,44 @@ function tempToPct(t){
 const latest = {}; // room -> {temp_c, humidity, created_at}
 let latestTank = null; // {temp_c, ph, spec_gravity, created_at}
 
-// UK mould/health humidity thresholds — mirrors the device's getHumidityColor exactly.
-function mouldRisk(h){
-  if (h < 60) return { label:"OK", color:"#00CC44" };
-  if (h < 75) return { label:"WATCH", color:"#FFAA00" };
-  return { label:"MOULD RISK", color:"#CC0000" };
+// Mold risk - mirrors the device's computeMoldRiskLevel exactly: combines
+// current humidity + temperature with how many of the last 24 hours have
+// spent >=70% RH (sustained high humidity matters far more than a brief
+// post-shower spike). moldHours[room] holds that count, refreshed each load.
+const moldHours = {}; // room -> hours >=70% RH in the last 24h
+
+const MOLD_LEVELS = [
+  { label:"LOW",            color:"#00CC44" },
+  { label:"MODERATE",       color:"#FFAA00" },
+  { label:"HIGH",           color:"#FF4400" },
+  { label:"SUSTAINED HIGH", color:"#CC0000" },
+];
+
+function mouldRisk(humidity, tempC, hoursAbove70){
+  let level;
+  if (humidity < 60) {
+    level = 0;
+  } else if (humidity < 70) {
+    level = (hoursAbove70 >= 6) ? 1 : 0;
+  } else if (tempC < 12) {
+    level = 1; // cold slows mold growth despite high humidity
+  } else if (hoursAbove70 >= 12) {
+    level = 3;
+  } else {
+    level = 2;
+  }
+  return MOLD_LEVELS[level];
+}
+
+// Computes hours >=70% RH in the last 24h for a room via a Supabase SQL
+// function (hours_above_70) - see hours_above_70.sql. Doing this
+// server-side avoids re-fetching and re-aggregating a full day of raw
+// readings on every page load, same reasoning as readings_bucketed for
+// the charts.
+async function computeHoursAbove70(roomKey){
+  const { data, error } = await sb.rpc('hours_above_70', { room_key: roomKey });
+  if (error) { console.error('[mold] hours_above_70 RPC failed:', error); return 0; }
+  return data ?? 0;
 }
 
 function renderGauges(){
@@ -243,7 +276,7 @@ function renderGauges(){
     const d = latest[r.key];
     const temp = d ? d.temp_c.toFixed(1) : "--";
     const hum = d ? d.humidity.toFixed(0) : "--";
-    const risk = d ? mouldRisk(d.humidity) : null;
+    const risk = d ? mouldRisk(d.humidity, d.temp_c, moldHours[r.key] || 0) : null;
     const isLive = d && (Date.now() - new Date(d.created_at).getTime()) < 30*60*1000;
     const ago = d ? timeAgo(d.created_at) : "no data yet";
     return `
@@ -349,6 +382,7 @@ async function loadLatest(){
       .order('created_at', { ascending:false })
       .limit(1);
     if (!error && data && data.length) latest[r.key] = data[0];
+    moldHours[r.key] = await computeHoursAbove70(r.key);
   }
 
   const { data: tankData, error: tankErr } = await sb.from('aquarium_readings')
