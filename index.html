@@ -538,6 +538,7 @@ function renderLegend(){
 
 async function refreshChart(){
   let datasets, anyData, pmAxisMax = 60; // sensible default ceiling when there's no data yet
+  let humAxisMin = 30, humAxisMax = 90;  // sensible default ceiling/floor when there's no data yet
 
   if (activeView === "air_quality"){
     const series = await fetchSeries(PM_ROOM_KEY, activeRange);
@@ -555,6 +556,18 @@ async function refreshChart(){
     await Promise.all(rooms.map(async r => { seriesByRoom[r.key] = await fetchSeries(r.key, activeRange); }));
     anyData = Object.values(seriesByRoom).some(s => s.length > 0);
     datasets = buildClimateDatasets(seriesByRoom);
+
+    // Humidity often sits nearly flat for hours at a time (e.g. steady 64%).
+    // With no explicit min/max, Chart.js auto-scales tightly to the data and
+    // a near-zero-height range can make the line collapse to an edge and
+    // disappear. Pad the range so there's always a visible band around it.
+    const humVals = Object.values(seriesByRoom).flatMap(s => s.map(p => p.hum)).filter(v => v != null);
+    if (humVals.length){
+      let lo = Math.min(...humVals), hi = Math.max(...humVals);
+      if (hi - lo < 10){ const mid = (hi + lo) / 2; lo = mid - 5; hi = mid + 5; }
+      humAxisMin = Math.max(0, Math.floor(lo - 3));
+      humAxisMax = Math.min(100, Math.ceil(hi + 3));
+    }
   }
 
   document.getElementById('emptyState').style.display = anyData ? 'none' : 'flex';
@@ -582,7 +595,7 @@ async function refreshChart(){
     scales = {
       x: { type:'time', time:{ unit:timeUnit }, ticks:{ color:'#7C8792', maxRotation:0 }, grid:{ color:'#20272F' } },
       yTemp: { position:'left', ticks:{ color:'#E2A24C' }, grid:{ color:'#20272F' }, title:{ display:true, text:'°C', color:'#7C8792' } },
-      yHum:  { position:'right', ticks:{ color:'#4FA8A0' }, grid:{ display:false }, title:{ display:true, text:'% RH', color:'#7C8792' } },
+      yHum:  { position:'right', min:humAxisMin, max:humAxisMax, ticks:{ color:'#4FA8A0' }, grid:{ display:false }, title:{ display:true, text:'% RH', color:'#7C8792' } },
     };
   }
 
