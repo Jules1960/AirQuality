@@ -158,9 +158,10 @@
 
 <div class="controls">
   <div class="chip-row" id="roomChips">
-    <div class="chip" data-room="both" data-active="true">Both rooms</div>
+    <div class="chip" data-room="both" data-active="true">All rooms</div>
     <div class="chip" data-room="living_room">Living room</div>
     <div class="chip" data-room="bedroom">Bedroom</div>
+    <div class="chip" data-room="roaming_monitor">Roaming</div>
   </div>
   <div class="chip-row" id="rangeChips">
     <div class="chip" data-range="24h" data-active="true">24H</div>
@@ -191,8 +192,9 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 
 const ROOMS = [
-  { key: "living_room", label: "Living Room", accent: "#E2A24C" },
-  { key: "bedroom",      label: "Bedroom",      accent: "#4FA8A0" },
+  { key: "living_room",     label: "Living Room",     accent: "#E2A24C" },
+  { key: "bedroom",         label: "Bedroom",         accent: "#4FA8A0" },
+  { key: "roaming_monitor", label: "Roaming Monitor", accent: "#C77DFF" },
 ];
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
